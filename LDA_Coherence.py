@@ -25,10 +25,10 @@ def compute_coherence_values(dictionary, corpus, texts, topic_range):
     for num_topics in tqdm(topic_range, desc="計算 Coherence Score"):
         # 核心修正：將 passes 降至最低安全值
         # 降低迭代次數，以極大加速單次模型訓練
-        MIN_PASSES = 5
+        MIN_PASSES = 20
 
         # 核心修正：使用較小的 chunksize 減少記憶體壓力
-        MIN_CHUNKSIZE = 50
+        MIN_CHUNKSIZE = 100
         # 訓練 LDA 模型 (使用與之前相同的基礎參數)
         lda_model = LdaModel(
             corpus=corpus,
@@ -45,8 +45,8 @@ def compute_coherence_values(dictionary, corpus, texts, topic_range):
             model=lda_model,
             texts=texts,
             dictionary=dictionary,
-            coherence='c_v',
-            topn=10
+            coherence='c_v'
+            #topn=10
             #workers=1
 
         )
@@ -111,7 +111,7 @@ if __name__ == '__main__':
     # 3. 定義主題範圍
     min_topics = 2
     max_topics = 15
-    step = 5
+    step = 1
     topic_range = range(min_topics, max_topics + 1, step)
 
     # 4. 執行 Coherence Score 計算 (報錯的程式碼行現在被保護了)
@@ -156,3 +156,4 @@ if __name__ == '__main__':
     print(f"\n✨ 推薦的最佳主題數量是: {optimal_num_topics} (Coherence Score: {max_score:.4f})")
 
     plt.show()
+
