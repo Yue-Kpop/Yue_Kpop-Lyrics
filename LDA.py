@@ -4,9 +4,11 @@ from gensim.models import LdaModel
 from matplotlib.font_manager import FontProperties
 import re
 import ast # 引入 Abstract Syntax Tree 模組
+import numpy as np
 from tqdm import tqdm
 
-input_file = "processed_HYPE_data_ver2.csv"
+input_file = "data/merged_lyrics_with_labels.csv"
+company = "SM"
 df = pd.read_csv(input_file)
 # ====================================================================
 # ⚠️ 1. 資料讀取與準備 (請根據你的實際程式碼修改這部分)
@@ -25,14 +27,18 @@ def convert_str_to_list(list_str):
         # 如果遇到 NaN 或無法評估的字串，返回空列表
         return []
 
+
+
 # 應用轉換，這將是你的新最終詞彙欄位
 df['final_tokens_restored'] = df['final_tokens'].apply(convert_str_to_list)
+documents = df['final_tokens_restored'].tolist()
 
+df = df[df['label name'] == company]
+documents = df['final_tokens_restored'].tolist()
 # --------------------------------------------------------------------
 # 接下來的 LDA 流程，請使用這個新的還原欄位
 # --------------------------------------------------------------------
 # 1. 建立文檔集合 (List of Lists)
-documents = df['final_tokens_restored'].tolist()
 
 # 2. 移除空文檔（安全操作）
 documents = [doc for doc in documents if doc]
@@ -84,7 +90,7 @@ print(f"✅ 語料庫文檔數: {len(corpus)}")
 # ====================================================================
 
 # ⚠️ 關鍵參數： num_topics (建議從 10 開始嘗試)
-NUM_TOPICS = 10
+NUM_TOPICS = 2
 
 print(f"\n開始訓練 {NUM_TOPICS} 個主題的 LDA 模型...")
 
@@ -96,7 +102,7 @@ lda_model = LdaModel(
     chunksize=100,
     passes=20,  # 增加迭代次數以提高模型品質
     alpha='auto',
-    per_word_topics=False  # 這裡通常不需要 per_word_topics
+    per_word_topics=True  # 這裡通常不需要 per_word_topics
 )
 
 print("✅ LDA 模型訓練完成。")
@@ -123,12 +129,229 @@ for idx, topic in lda_model.print_topics(num_words=10):
     print(f"🌟 主題 #{idx + 1}：")
     print(f"   {cleaned_topic}\n")
 
-# ====================================================================
-# 6. 下一步：主題連貫性 (可選)
-# ====================================================================
+## ------------------------------------------------------------------
+## 輸出 1: 主題-詞彙概率 (phi)
+## ------------------------------------------------------------------
 
-# 這是下一階段優化主題數量的關鍵
-# from gensim.models.coherencemodel import CoherenceModel
-# coherence_model_lda = CoherenceModel(model=lda_model, texts=documents, dictionary=dictionary, coherence='c_v')
-# coherence_lda = coherence_model_lda.get_coherence()
-# print(f"主題連貫性分數 (Coherence Score): {coherence_lda}")
+print("==============================================")
+print(f"✨ 主題-詞彙概率 (Top 15 詞彙，共 {NUM_TOPICS} 個主題)")
+print("==============================================")
+
+# 獲取每個主題的 Top 詞彙和權重
+topics_and_probs = lda_model.show_topics(
+    num_topics=NUM_TOPICS,
+    num_words=15,  # 這裡我們提取 Top 15 詞彙，比你之前給的 Top 10 更詳細
+    formatted=False
+)
+
+for topic_id, word_probs in topics_and_probs:
+    print(f"\n🌟 主題 #{topic_id + 1}:")
+    # 將詞彙及其概率格式化輸出
+    output_str = ", ".join([f"{word} ({prob:.4f})" for word, prob in word_probs])
+    print(output_str)
+
+## ------------------------------------------------------------------
+## 輸出 2: 文檔-主題概率 (theta) - 新增欄位
+## ------------------------------------------------------------------
+
+print("\n==============================================")
+print("📄 文檔-主題概率 (新增主題分佈欄位)")
+print("==============================================")
+
+# 使用 lda_model.get_document_topics() 確保輸出是稀疏格式的 (topic_id, probability) 元組列表
+# 必須傳入 corpus 參數作為輸入。
+doc_topics = [
+    lda_model.get_document_topics(
+        doc,
+        minimum_probability=0.0
+    )
+    for doc in corpus
+]
+# ----------------------------------------------------------------------
+
+# 2. 格式化為 DataFrame 結構 (保持不變)
+# 我們需要一個函數來將 (Topic_ID, Probability) 列表轉換為固定長度的概率列表
+def format_topic_distribution(topic_list, num_topics):
+    """將主題概率列表轉換為固定長度（1到N）的概率向量"""
+
+    # 創建一個長度為 num_topics 的零向量
+    prob_vector = np.zeros(num_topics)
+
+    # 將主題列表中的概率填入對應的位置
+    for topic_id, prob in topic_list:
+        if topic_id < num_topics:
+            prob_vector[topic_id] = prob
+
+    return prob_vector.tolist()
+
+
+# 3. 應用格式化函數
+# 這裡應該可以成功執行，因為 doc_topics 已經是預期的 (id, prob) 列表
+topic_distributions = [format_topic_distribution(doc, NUM_TOPICS) for doc in doc_topics]
+
+# 4. 創建新的 DataFrame 欄位名稱 (保持不變)
+topic_cols = [f'Topic_{i + 1}_Prob' for i in range(NUM_TOPICS)]
+
+# 5. 將主題概率添加到你的原始 DataFrame (df) (保持不變)
+df_topic_probs = pd.DataFrame(topic_distributions, columns=topic_cols)
+
+# 確保 df 和 df_topic_probs 的長度一致
+# ⚠️ 由於你的原始代碼中 df 的來源和 'corpus' 的處理沒有完全顯示，
+# 這裡我們假設它們是同步的。
+df = pd.concat([df.reset_index(drop=True), df_topic_probs], axis=1)
+
+print(f"✅ 已成功為 DataFrame 新增 {NUM_TOPICS} 個主題概率欄位。")
+print("\n--- 帶有主題概率的 DataFrame 前 5 行 ---")
+print(df[topic_cols].head())
+# ------------------------------------------------------------------
+# 【修正：處理 NaN 值以避免 FutureWarning】
+# ------------------------------------------------------------------
+
+# 1. 定義主題概率欄位
+topic_cols = [f'Topic_{i + 1}_Prob' for i in range(NUM_TOPICS)]
+
+# 2. 【核心修正】在計算最大值之前，將所有 NaN 替換為 0.0
+# 這能確保 idxmax 總能找到一個最大值 (即使它是 0.0)
+df[topic_cols] = df[topic_cols].fillna(0.0)
+
+# 3. 找出每行 (每首歌) 的最大概率值和主導主題
+# 修正後的代碼將不再觸發 FutureWarning
+df['Dominant_Topic_Prob'] = df[topic_cols].max(axis=1)  # 最大概率值
+df['Dominant_Topic'] = df[topic_cols].idxmax(axis=1)  # 最大概率值所在欄位名稱 (例如 'Topic_2_Prob')
+
+# 4. 清理欄位名稱 (移除'_Prob')
+df['Dominant_Topic'] = df['Dominant_Topic'].str.replace('_Prob', '')
+
+
+# ------------------------------------------------------------------
+# 【新增替換：最代表性文檔檢視】
+# ... (display_representative_documents 函式保持不變) ...
+
+def display_representative_documents(df, num_topics, top_n=5):
+    """
+    對每個主題，找出概率最高的 Top N 首歌 (即最能代表該主題的文檔)。
+    """
+    print("\n==============================================")
+    print("👑 最代表性文檔檢視 (Top 5 歌曲/文檔)")
+    print("==============================================")
+
+    # 假設你的原始 df 中有 'Song Title' 和 'Artist' 欄位
+    # 如果沒有，請替換成你實際的歌曲識別欄位
+    # display_cols = ['artist', 'title', 'Dominant_Topic_Prob'] # 這裡不再需要這個變數，直接在循環中使用
+
+    for i in range(1, num_topics + 1):
+        topic_name = f'Topic_{i}'
+
+        # 篩選出以當前主題為主導主題的歌曲
+        topic_subset = df[df['Dominant_Topic'] == topic_name]
+
+        if topic_subset.empty:
+            print(f"主題 #{i} ({topic_name})：沒有主導歌曲。")
+            continue
+
+        # 根據 Dominant_Topic_Prob 降序排序，選出 Top N
+        top_documents = topic_subset.sort_values(
+            by='Dominant_Topic_Prob',
+            ascending=False
+        ).head(top_n)
+
+        print(f"\n--- 主題 #{i} ({topic_name}) ---")
+
+        # 打印 Top N 歌曲資訊
+        for index, row in top_documents.iterrows():
+            prob = row['Dominant_Topic_Prob']
+            # 確保使用 .get() 方法，以提高程式碼的容錯性
+            artist = row.get('recording_artist_credit', 'N/A')
+            title = row.get('recording_title', 'N/A')
+
+            print(f"[{prob:.4f}] {artist} - 《{title}》")
+
+
+# 調用新的檢視函數
+display_representative_documents(df, NUM_TOPICS, top_n=5)
+
+# ------------------------------------------------------------------
+# 最終打印 (可選，作為一個總結)
+# ------------------------------------------------------------------
+print("\n--- 歌曲主導主題歸類結果 (前 5 筆) ---")
+# 確保使用 df 中的實際欄位名
+print(df[['recording_artist_credit', 'recording_title', 'Dominant_Topic', 'Dominant_Topic_Prob']].head())
+#import pyLDAvis.gensim_models
+#import pyLDAvis
+
+# 刪除 pyLDAvis.enable_notebook()，因為您在非 Notebook 環境下運行
+# pyLDAvis.enable_notebook()
+
+# 準備可視化數據
+#data = pyLDAvis.gensim_models.prepare(lda_model, corpus, dictionary)
+
+# 保存為 HTML 文件
+# 文件名將是 "5_topic_model.html" (如果 num_topics=5)
+#pyLDAvis.save_html(data, f"./{NUM_TOPICS}_topic_model.html")
+
+#print(f"✅ 可視化圖表已成功保存為：{NUM_TOPICS}_topic_model.html")
+#print("請在您的瀏覽器中打開此文件來查看結果。")
+
+
+
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+
+
+def generate_wordcloud(counts, font_path, filename):
+    """根據詞頻字典產生文字雲並儲存"""
+    if not counts:
+        print(f"沒有足夠的詞彙來產生 {filename}。")
+        return
+
+    # 設置 WordCloud 參數
+    wc = WordCloud(
+        font_path=font_path,  # 使用韓文字型
+        width=1000,
+        height=600,
+        background_color='white',
+        max_words=200,
+        prefer_horizontal=0.9  # 盡量讓文字水平顯示
+    ).generate_from_frequencies(counts)
+
+    plt.figure(figsize=(12, 8))
+    plt.imshow(wc, interpolation='bilinear')
+    plt.axis('off')
+    plt.title(filename.replace(".png", ""), fontsize=20)
+    plt.savefig(filename)
+    print(f"文字雲已儲存至: {filename}")
+    plt.close()
+
+
+# --------------------------------------------------------------------
+# 執行文字雲生成
+# --------------------------------------------------------------------
+
+print("\n==============================================")
+print("☁️ 主題詞彙文字雲生成")
+print("==============================================")
+
+# 獲取所有主題的 Top 詞彙和權重 (這裡使用你前面提取的數據)
+# 這裡我們使用 Top 50 詞彙以獲得更豐富的文字雲
+topics_and_probs = lda_model.show_topics(
+    num_topics=NUM_TOPICS,
+    num_words=100,  # 增加詞彙量以豐富視覺效果
+    formatted=False
+)
+
+for topic_id, word_probs in topics_and_probs:
+    # 將 word_probs (List of Tuples) 轉換為 WordCloud 需要的字典格式 {word: probability}
+    word_freq_dict = dict(word_probs)
+
+    filename = f"Topic_{topic_id + 1}_Wordcloud.png"
+
+    # 調用文字雲生成函式
+    generate_wordcloud(
+        counts=word_freq_dict,
+        font_path=FONT_PATH,  # 確保這裡使用你定義的 FONT_PATH
+        filename=filename
+    )
+
+output_file = f"LDA_topic{NUM_TOPICS}_{company}.csv"
+#output_file = f"LDA_topic{NUM_TOPICS}_kpop.csv"
+df.to_csv(output_file, index=False, encoding='utf-8-sig')
